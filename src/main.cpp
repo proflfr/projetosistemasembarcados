@@ -1,174 +1,173 @@
-#include <Arduino.h>
-#include <DHT.h>
-#include <WiFi.h>
-#include <SPIFFS.h>
+  #include <Arduino.h>
+  #include <DHT.h>
+  #include <WiFi.h>
+  #include <SPIFFS.h>
 
 
 
-#define WIFI_NETWORK "SUZANA 40 OI FIBRA 2G"
-#define  WIFI_PASSWORD "10081958"
-#define WIFI_TIMEOUT_MS 2000
+  #define WIFI_NETWORK "SUZANA 40 OI FIBRA 2G"
+  #define  WIFI_PASSWORD "10081958"
+  #define WIFI_TIMEOUT_MS 2000
 
 
-/*
-HARDWARE
-*/
-// DHT22 SENSOR
-DHT my_sensor(5, DHT22);
-//LED PINOUT
-int LED = 2;
-//pwm
-int pwm_pin = 27; // pino a ser usado para pwm 
-int pwm_channel = 0; // Canal de pwm
+  /*
+  HARDWARE
+  */
+  // DHT22 SENSOR
+  DHT my_sensor(5, DHT22);
+  //LED PINOUT
+  int LED = 2;
+  //pwm
+  int pwm_pin = 27; // pino a ser usado para pwm 
+  int pwm_channel = 0; // Canal de pwm
 
-/*
- * Prototipos das tarefas
- */
-void tarefa_1(void * parameters); //Ler temperatura
-void tarefa_2(void * parameters); //Conectar e Manter WIFI
-void tarefa_3(void * parameters); // Web Server
-void tarefa_4(void * parameters); // Salvar as medias, semaforo
-void tarefa_5(void * parameters); // Atualiza PWM pela temperatura
-void tarefa_6(void * parameters); // Salva a configuracao de fan
-void tarefa_7(void * parameters); //
-/*
-Task Handlers
-*/
-xSemaphoreHandle sem_media = NULL;
-xTaskHandle save_cfg = NULL;
+  /*
+  * Prototipos das tarefas
+  */
+  void tarefa_1(void * parameters); //Ler temperatura
+  void tarefa_2(void * parameters); //Conectar e Manter WIFI
+  void tarefa_3(void * parameters); // Web Server
+  void tarefa_4(void * parameters); // Salvar as medias, semaforo
+  void tarefa_5(void * parameters); // Atualiza PWM pela temperatura
+  void tarefa_6(void * parameters); // Salva a configuracao de fan
 
-/*
-Globals
-*/
-volatile float temperature;
-volatile float temp_med = 0;
-volatile float peak_buffer = 0;
-  //curvas
-volatile int curva_ind = 2;
-int get_curva(void);
-void load_cfg();
-String translate(int x);
+  /*
+  Task Handlers
+  */
+  xSemaphoreHandle sem_media = NULL;
+  xTaskHandle save_cfg = NULL;
+
+  /*
+  Globals
+  */
+  volatile float temperature;
+  volatile float temp_med = 0;
+  volatile float peak_buffer = 0;
+    //curvas
+  volatile int curva_ind = 2;
+  int get_curva(void);
+  void load_cfg();
+  String translate(int x);
 
 
-/*
-DEFAULT FUNCTIONS
-*/
-void setup() {
-  pinMode(LED, OUTPUT);
-  Serial.begin(9600);
-  if(!SPIFFS.begin()){
-    Serial.println("[SPIFFS] Erro na Montagem"); 
-  }
-  Serial.println("[SPIFFS] Montado");
-  load_cfg();
+  /*
+  DEFAULT FUNCTIONS
+  */
+  void setup() {
+    Serial.begin(9600);
+    if(!SPIFFS.begin()){
+      Serial.println("[SPIFFS] Erro na Montagem"); 
+    }
+    Serial.println("[SPIFFS] Montado");
+    load_cfg();
 
+
+    xTaskCreatePinnedToCore(
+      tarefa_1,  // nome pro os
+      "get_temperature", // nome humano
+      1000, // tamanho da pilha
+      NULL, // parameters
+      6,  //prioridade
+      NULL, // handle
+      1
+    );
 
   xTaskCreatePinnedToCore(
-    tarefa_1,  // nome pro os
-    "get_temperature", // nome humano
-    1000, // tamanho da pilha
-    NULL, // parameters
-    6,  //prioridade
-    NULL, // handle
+    tarefa_2,
+    "Keep Alive",
+    5000,
+    NULL,
+    2,
+    NULL,
+    CONFIG_ARDUINO_RUNNING_CORE
+  );
+  xTaskCreate(
+    tarefa_3,
+    "Web_Server",
+    5000,
+    NULL,
+    1,
+    NULL
+  );
+  xTaskCreate(
+    tarefa_4,
+    "Salvar Valores",
+    8000,
+    NULL,
+    4,
+    NULL
+  );
+  xTaskCreatePinnedToCore(
+    tarefa_5,
+    "Atualiza PWM",
+    1000,
+    NULL,
+    5,
+    NULL,
     1
   );
+  xTaskCreate(
+    tarefa_6,
+    "Salva Cfg",
+    5000,
+    NULL,
+    3,
+    &save_cfg
+  );
 
-xTaskCreatePinnedToCore(
-  tarefa_2,
-  "Keep Alive",
-  5000,
-  NULL,
-  2,
-  NULL,
-  CONFIG_ARDUINO_RUNNING_CORE
-);
-xTaskCreate(
-  tarefa_3,
-  "Web_Server",
-  5000,
-  NULL,
-  1,
-  NULL
-);
-xTaskCreate(
-  tarefa_4,
-  "Salvar Valores",
-  8000,
-  NULL,
-  4,
-  NULL
-);
-xTaskCreatePinnedToCore(
-  tarefa_5,
-  "Atualiza PWM",
-  1000,
-  NULL,
-  5,
-  NULL,
-  1
-);
-xTaskCreate(
-  tarefa_6,
-  "Salva Cfg",
-  5000,
-  NULL,
-  3,
-  &save_cfg
-);
-
-}
-
-void loop() {
-  // put your main code here, to run repeatedly:
-  vTaskDelay(15);
-
-}
-
-
-
-
-
-/* Tarefas de exemplo que usam funcoes para suspender/continuar as tarefas */
-void tarefa_1(void * parameters)
-{
-  my_sensor.begin();
-  volatile float temp_sum = 0;
-  volatile float temp_peak = 0;
-  volatile int temp_ind = 0;
-  sem_media = xSemaphoreCreateBinary();
-
-	for(;;)
-	{
-		temperature = my_sensor.readTemperature();        // Leitura do Sensor
-		temp_ind ++;
-		temp_sum = temp_sum + temperature;                // Soma 631 temps (20min)
-    if(temperature > temp_peak){                      // Temperatura de Pico (20m)
-      temp_peak = temperature;
-    }
-    Serial.print("Temperatura: ");
-    Serial.println(temperature);
-		if(temp_ind == 6){
-			temp_med = temp_sum/temp_ind;                   // Media de temperatura a cada 20m (480*2.5s)
-      peak_buffer = temp_peak;                       // Carrega o buffer da temperatura de pico
-      temp_peak = 0;
-			temp_ind = 0;
-			temp_sum = 0;
-      Serial.print("Temperatura Media: ");
-      Serial.println(temp_med);                         // So pra manter informado no Serial
-      xSemaphoreGive(sem_media);                      // Libera para a funcao que grava
-		} 
-		vTaskDelay(2500);
-	}
-}
-
-
-void tarefa_2(void * parameters){
-  if(!WiFi.begin(WIFI_NETWORK, WIFI_PASSWORD)){
-    Serial.println("[WIFI] Erro na Inicializacao");
   }
-  Serial.println("[WIFI] Modulo Inicializado");
 
-  for(;;){
+  void loop() {
+    // put your main code here, to run repeatedly:
+    vTaskDelay(15);
+
+  }
+
+
+
+
+
+  /* Tarefas de exemplo que usam funcoes para suspender/continuar as tarefas */
+  void tarefa_1(void * parameters)
+  {
+    my_sensor.begin();
+    volatile float temp_sum = 0;
+    volatile float temp_peak = 0;
+    volatile int temp_ind = 0;
+    sem_media = xSemaphoreCreateBinary();
+
+    for(;;)
+    {
+      temperature = my_sensor.readTemperature();        // Leitura do Sensor
+      temp_ind ++;
+      temp_sum = temp_sum + temperature;                // Soma 631 temps (20min)
+      if(temperature > temp_peak){                      // Temperatura de Pico (20m)
+        temp_peak = temperature;
+      }
+      Serial.print("Temperatura: ");
+      Serial.println(temperature);
+      if(temp_ind == 6){
+        temp_med = temp_sum/temp_ind;                   // Media de temperatura a cada 20m (480*2.5s)
+        peak_buffer = temp_peak;                       // Carrega o buffer da temperatura de pico
+        temp_peak = 0;
+        temp_ind = 0;
+        temp_sum = 0;
+        Serial.print("Temperatura Media: ");
+        Serial.println(temp_med);                         // So pra manter informado no Serial
+        xSemaphoreGive(sem_media);                      // Libera para a funcao que grava
+      } 
+      vTaskDelay(2500);
+    }
+  }
+
+
+  void tarefa_2(void * parameters){
+    if(!WiFi.begin(WIFI_NETWORK, WIFI_PASSWORD)){
+      Serial.println("[WIFI] Erro na Inicializacao");
+    }
+    Serial.println("[WIFI] Modulo Inicializado");
+
+    for(;;){
 		if(WiFi.status() == WL_CONNECTED){              // Verifica se o Wifi Ainda esta conectado
       Serial.println("[WIFI] Conectado");
 			vTaskDelay(31000 / portTICK_PERIOD_MS);       // Periodo de repeticao da verificacao
